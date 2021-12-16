@@ -3,15 +3,22 @@
 //                                                                     RPEngine
 //
 //*****************************************************************************
+/*
+ *   Reverse Proxy Engine.
+ *
+ *   (c) Copyright 2021, Programify Ltd.
+ *   All rights reserved.
+ */
 
 
 //*****************************************************************************
-//                                               Application Configuration File
+//                                                    Application Configuration
 //*****************************************************************************
 /*
- *   RPEngine.exe.config must be located in the same folder as the executable.
+ *   "RPEngine.exe.config" must be located in the same folder as the executable.
  *   In the Visual Studio IDE, this file is awkwardly named "app.config" which
- *   generates the exe.config file at build time.
+ *   generates the RPEngine.exe.config file at build time and places it in the
+ *   Debug or Release folder depending on your selected Configuration.
  */
 
 
@@ -42,6 +49,24 @@
  */
 
 
+//*****************************************************************************
+//                                                                  Development
+//*****************************************************************************
+/*
+ *   14-12-21  Started development.
+ */
+
+
+//*****************************************************************************
+//                                                          Planned Development
+//*****************************************************************************
+/*
+ *   Manage spin-out of multiple threads to service incoming requests. This
+ *   should provide a higher throughput since some string processing is
+ *   required when verifying incoming client requests.
+ */
+
+
 using System;
 using System.Configuration;
 using System.Collections.Generic;
@@ -52,6 +77,8 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web;
+using System.Security.Principal;
+using System.Reflection;
 
 
 //*****************************************************************************
@@ -64,21 +91,22 @@ namespace NSEngineApp
 //=============================================================================
 //                                                                     CProgram
 //-----------------------------------------------------------------------------
-class CProgram
+static class CProgram
 {
-     public static byte[] gaPage400 ;
+     public static byte[] gaPage400 ;        // Preloaded HTTP error [400] page.
 
-     public static bool gbfRunServer ;
+     public static bool gbfRunServer ;       // Engine continues running while this flag is set true.
 
-     public static string gstrDomains ;
-     public static string gstrError400 ;
-     public static string gstrProxyIp ;
-     public static string gstrServerIp ;
+     public static string gstrDomains ;      // Config: Whitelist of valid domain names to serve.
+     public static string gstrError400 ;     // Config: Fully qualified URI to Error 400 page on localized server.
+     public static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
+     public static string gstrServerIp ;     // Config: "LocalizedServerIP" IP address of true localized server.
 
-     public static string[] gastrDomains ;
-     public static string gstrHttp ;
-     public static string gstrHttps ;
-     public static string gstrServer ;
+     public static string[] gastrDomains ;   // Array of valid domain names to serve.
+     public static string gstrHttp ;         // Fully qualified HTTP address and port to listen on.
+     public static string gstrHttps ;        // Fully qualified HTTPS address and port to listen on.
+     public static string gstrServer ;       // Fully qualified base address and port of localized server.
+     public static string gstrVersion ;      // Full version number for application including build code.
 
      public static HttpClient   g_server ;        // Class support for localized server.
 
@@ -90,9 +118,12 @@ class CProgram
 //-----------------------------------------------------------------------------
 static void Main (string [] args)
 {
+// Get the unique version ID for this build
+     gstrVersion = GetBuildVersion () ;
+// Display application's title
      Console.Title = "RPEngine - Reverse Proxy Engine" ;
      Console.ForegroundColor = ConsoleColor.White ;
-     Console.WriteLine ("RPEngine") ;
+     Console.WriteLine ("RPEngine v{0}", gstrVersion) ;
      Console.WriteLine ("Reverse Proxy Engine. (c) 2021, Programify.") ;
      Console.WriteLine ("") ;
 
@@ -455,6 +486,41 @@ public static void ReportException (Exception e)
      Console.ForegroundColor = ConsoleColor.Red ;
      Console.WriteLine ("*** " + e.Message) ;
      Console.ForegroundColor = ConsoleColor.White ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                              GetBuildVersion
+//-----------------------------------------------------------------------------
+/*
+ *   GetBuildVersion() returns a string based on the assembly's major and minor
+ *   version numbers and the date and time (UTC) when the executable file was
+ *   last written to (this usually means when last compiled).
+ */
+public static string GetBuildVersion ()
+{
+     int       iYear ;
+
+     Assembly       assembly ;
+     DateTime       writetime ;
+     FileInfo       fileinfo ;
+     Version        version ;
+
+// Access assembly metrics
+     assembly = Assembly.GetExecutingAssembly () ;
+     version  = assembly.GetName().Version ;
+// Get information on executable's file
+     fileinfo = new FileInfo (assembly.Location) ;
+// Extract date and time EXE was last written to
+     writetime = fileinfo.LastWriteTimeUtc ;
+// Strip away the century
+     iYear  = writetime.Year ;
+     iYear %= 100 ;
+// Construct date and time last written to
+     string strDate = string.Format ("{0:00}{1:00}{2:00}", iYear, writetime.Month, writetime.Day) ;
+     string strTime = string.Format ("{0:00}{1:00}{2:00}", writetime.Hour, writetime.Minute, writetime.Second) ;
+// Construct version number with build date and time     
+     return string.Format ("{0}.{1}.{2}.{3}", version.Major, version.Minor, strDate, strTime) ;
 }
 
 
