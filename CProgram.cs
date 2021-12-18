@@ -54,6 +54,7 @@
 //*****************************************************************************
 /*
  *   14-12-21  Started development.
+ *   18-12-21  v1.0; Save restore point before next release.
  */
 
 
@@ -227,7 +228,6 @@ public static bool ConnectLocalizedServer ()
 public static async Task HandleIncomingConnections ()
 {
      int       iStatus ;
-     string    strQuery ;
      string    strStatus ;
 
      HttpListenerContext      f_context ;
@@ -246,25 +246,23 @@ public static async Task HandleIncomingConnections ()
                f_request  = f_context.Request ;
                f_response = f_context.Response ;
                f_message  = null ;
-          // Default to bad request
-               iStatus    = (int) HttpStatusCode.InternalServerError ;
-               strStatus  = "Internal Server Error" ;
           // Send info to console window without terminating the console line
                DisplayEvent (f_request) ;
           // Check if any known Domain Name is provided in client request
-               if (CheckDomains (f_request))
-                    strQuery = f_request.Url.PathAndQuery ;
-               else
+               if (! CheckDomains (f_request))
                {
                     ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
                     goto close_channel ;
                }
+          // Default to bad request
+               iStatus   = (int) HttpStatusCode.InternalServerError ;
+               strStatus = "Internal Server Error" ;
           // Attempt to create connection to localized server to process redirected requests
                try
                {
-                    f_message = await g_server.GetAsync (strQuery) ;
+                    f_message = await g_server.GetAsync (f_request.Url.PathAndQuery) ;
                // Report the HTTP Statuc Code
-                    iStatus   = ((int) f_message.StatusCode) ;
+                    iStatus = ((int) f_message.StatusCode) ;
                }
                catch (Exception e)
                {
@@ -274,22 +272,14 @@ public static async Task HandleIncomingConnections ()
                f_response.StatusCode = iStatus ;
                if (f_message != null)
                     strStatus = f_message.StatusCode.ToString () ;
-          // Colourize server status code
-               if (iStatus <= 299)
-                    Console.ForegroundColor = ConsoleColor.Green ;
-               else
-                    Console.ForegroundColor = ConsoleColor.Red ;
           // Report the HTTP status code
-               string strReport = string.Format ("[{0} - {1}]", iStatus, strStatus) ;
-               Console.WriteLine (strReport) ;
-               Console.ForegroundColor = ConsoleColor.White ;
+               DisplayStatus ('[', iStatus, strStatus, ']') ;
           // Abort request if page fetch failed
                if (f_message == null)
                     goto close_channel ;
 
           // Fetch the localized server's response (file content)
                byte[] abResponse = await f_message.Content.ReadAsByteArrayAsync () ;
-
 
           // Check if the asset was found on the localized server
                if (iStatus == (int) HttpStatusCode.OK)
@@ -380,10 +370,7 @@ public static void ErrorReflex (HttpListenerResponse response, HttpStatusCode st
                break ;
      }
 // Report error on console
-     Console.ForegroundColor = ConsoleColor.Red ;
-     string strReport = string.Format ("<{0} - {1}>", iStatus, strStatus) ;
-     Console.WriteLine (strReport) ;
-     Console.ForegroundColor = ConsoleColor.White ;
+     DisplayStatus ('<', iStatus, strStatus, '>') ;
 // Return data over the Internet to the client
      try
      {
@@ -394,6 +381,23 @@ public static void ErrorReflex (HttpListenerResponse response, HttpStatusCode st
      {
           ReportException (e) ;
      }
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                DisplayStatus
+//-----------------------------------------------------------------------------
+public static void DisplayStatus (char cStart, int iStatus, string strStatus, char cEnd)
+{
+// Colourize server status code
+     if (iStatus <= 299)
+          Console.ForegroundColor = ConsoleColor.Green ;
+     else
+          Console.ForegroundColor = ConsoleColor.Red ;
+// Report the HTTP status code
+     string strReport = string.Format ("{0}{1} - {2}{3}", cStart, iStatus, strStatus, cEnd) ;
+     Console.WriteLine (strReport) ;
+     Console.ForegroundColor = ConsoleColor.White ;
 }
 
 
@@ -416,7 +420,6 @@ public static void DisplayEvent (HttpListenerRequest f_request)
 
 // Report IP address
      Console.Write (f_request.RemoteEndPoint.Address.ToString ().PadRight (15) + " ") ;
-   //Console.Write (f_request.RemoteEndPoint.Port.ToString () + " ") ;
 
 // Colourize info about the request
      if (f_request.Url.LocalPath.Equals ("/"))
@@ -460,12 +463,12 @@ public static string GetWebPage (string strUri)
 // Attempt to fetch page from localized server
      try
      {
-          wcClient = new WebClient () ;
-          response = wcClient.OpenRead (strQuery) ;
-          reader   = new StreamReader (response, Encoding.ASCII) ;
-          strPage  = reader.ReadToEnd () ;
-          response.Close () ;
+          wcClient  = new WebClient () ;
+          response  = wcClient.OpenRead (strQuery) ;
+          reader    = new StreamReader (response, Encoding.ASCII) ;
+          strPage   = reader.ReadToEnd () ;
           strStatus = "OK" ;
+          response.Close () ;
      }
      catch (Exception e)
      {
