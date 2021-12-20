@@ -17,6 +17,7 @@
 //*****************************************************************************
 /*
  *   18-12-21  Started development.
+ *   20-12-21  Improved OutputLine() to simplify machine state code.
  */
 
 

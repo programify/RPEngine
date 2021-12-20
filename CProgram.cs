@@ -112,6 +112,10 @@
  *   19-12-21  v1.1.
  *             Multi-threaded service request handling with decoupled console
  *             output thread.
+ *   20-12-21  Reduce code needed to pre-load error HTML files.
+ *             Method Not Allowed now reported before Bad Request.
+ *             GetWebPage() consolidated.
+ *             Spun-out SetWorkerThreads() from Main().
  */
 
 
@@ -177,7 +181,6 @@ class CProgram
      static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
      static string gstrServer ;       // Fully qualified base address and port of localized server.
      static string gstrServerIp ;     // Config: "LocalizedServerIP" IP address of true localized server.
-     static string gstrVersion ;      // Full version number for application including build code.
 
      static HttpClient     g_server ;     // Class support for localized server.
 
@@ -189,12 +192,11 @@ class CProgram
 //-----------------------------------------------------------------------------
 static void Main ()
 {
-// Get the unique version ID for this build
-     gstrVersion = GetBuildVersion () ;
-// Display application's title
+// Prepare console task's window
      Console.Title = "RPEngine - Reverse Proxy Engine" ;
      Console.ForegroundColor = ConsoleColor.White ;
-     Console.WriteLine ("RPEngine v{0}", gstrVersion) ;
+// Display application's title
+     Console.WriteLine ("RPEngine v{0}", GetBuildVersion ()) ;
      Console.WriteLine ("Reverse Proxy Engine. (c) 2021, Programify.") ;
      Console.WriteLine ("") ;
 
@@ -207,13 +209,6 @@ static void Main ()
 // Connect to localized server which actually handles the Internet client's requests
      if (! ConnectLocalizedServer ())
           return ;
-
-// Use ThreadPool for a worker thread        
-     int minWorker, minIOC;  
-     ThreadPool.GetMinThreads(out minWorker, out minIOC);  
-     ThreadPool.SetMinThreads (4, minIOC);  
-     Console.WriteLine ("Using {0} worker threads.", minWorker) ;
-     Console.WriteLine ("") ;
 
 // Start console service
      CConsole.Start () ;
@@ -250,7 +245,25 @@ public static bool GetConfiguration ()
      for (var iIndex = 0 ; iIndex < gastrDomains.Length ; iIndex ++ )
           gastrDomains [iIndex] = gastrDomains [iIndex].Trim () ;
           
+// Use size of ThreadPool for a worker thread
+     SetWorkerThreads () ;
      return true ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                             SetWorkerThreads
+//-----------------------------------------------------------------------------
+private static void SetWorkerThreads ()
+{
+     int       iMinWorker ;
+     int       iMinIOC ;
+
+     ThreadPool.GetMinThreads (out iMinWorker, out iMinIOC) ;
+     ThreadPool.SetMinThreads (4, iMinIOC) ;
+
+     Console.WriteLine ("Using {0} worker threads.", iMinWorker) ;
+     Console.WriteLine ("") ;
 }
 
 
@@ -491,7 +504,6 @@ public static string ErrorReflex (HttpListenerResponse response, HttpStatusCode 
      {
           case 400 :  abBuffer = gaPage400 ; strStatus = "Bad Request" ;            break ;
           case 405 :  abBuffer = gaPage405 ; strStatus = "Method Not Allowed" ;     break ;
-
           default :   abBuffer = gaPage500 ; strStatus = "Internal Server Error" ;  break ;
      }
 // Report error on console
@@ -588,9 +600,8 @@ public static byte[] GetWebPage (string strUri)
      StreamReader   reader ;
      WebClient      wcClient ;
 
-// Init
-     strPage   = string.Format ("<p>Failed to preload <b>{0}</b> from localized server.</p>", strUri) ;
-     strStatus = string.Format ("{0}[Failed]{1}", ConsoleColour.FgRed, ConsoleColour.FgWhite) ;
+// Set default mini-web page
+     strPage  = string.Format ("<p>Failed to preload <b>{0}</b> from localized server.</p>", strUri) ;
 // Construct server query
      strQuery = string.Format ("http://{0}{1}", gstrServerIp, strUri) ;
 // Attempt to fetch page from localized server
@@ -606,7 +617,6 @@ public static byte[] GetWebPage (string strUri)
      catch (Exception e)
      {
      // Immediately report exception on console
-          //CConsole.WriteLine (ReportException (e)) ;
           strStatus = string.Format ("{0}{1}{2}", ConsoleColour.FgRed + ConsoleColour.BgBlack, e.Message, ConsoleColour.FgWhite + ConsoleColour.BgDarkBlue) ;
      }
 // Report action and outcome
