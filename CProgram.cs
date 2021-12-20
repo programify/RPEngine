@@ -119,6 +119,10 @@
 //                                                                 Known Issues
 //*****************************************************************************
 /*
+ *   +    Currently RPEngine only recognizes the GET method. Specifically it
+ *        will reject POST and HEAD methods until further development of the 
+ *        query service thread has been carried out.
+ *
  *   +    Cookies are not passed between client and localized server. We hope
  *        to implement this feature some time in the future.
  *
@@ -168,9 +172,6 @@ class CProgram
      static string[] gastrDomains ;   // Array of valid domain names to serve.
 
      static string gstrDomains ;      // Config: Whitelist of valid domain names to serve.
-     static string gstrError400 ;     // Config: Fully qualified URI to Error 400 page on localized server.
-     static string gstrError405 ;     // Config: Fully qualified URI to Error 405 page on localized server.
-     static string gstrError500 ;     // Config: Fully qualified URI to Error 500 page on localized server.
      static string gstrHttp ;         // Fully qualified HTTP address and port to listen on.
      static string gstrHttps ;        // Fully qualified HTTPS address and port to listen on.
      static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
@@ -186,7 +187,7 @@ class CProgram
 //-----------------------------------------------------------------------------
 //                                                                         Main
 //-----------------------------------------------------------------------------
-static void Main (string [] args)
+static void Main ()
 {
 // Get the unique version ID for this build
      gstrVersion = GetBuildVersion () ;
@@ -198,7 +199,7 @@ static void Main (string [] args)
      Console.WriteLine ("") ;
 
 // Load configuration
-     if (! GetConfiguration (args))
+     if (! GetConfiguration ())
           return ;
 // Start listening for incoming http connections
      if (! StartReverseProxy ())
@@ -231,7 +232,7 @@ static void Main (string [] args)
 //-----------------------------------------------------------------------------
 //                                                             GetConfiguration
 //-----------------------------------------------------------------------------
-public static bool GetConfiguration (string [] args)
+public static bool GetConfiguration ()
 {
 // Get network settings
      gstrProxyIp  = ConfigurationManager.AppSettings ["ReverseProxyIP"] ;
@@ -293,15 +294,13 @@ public static bool ConnectLocalizedServer ()
      g_server.Timeout = TimeSpan.FromSeconds (3) ;
 // Preload common error pages
      Console.ForegroundColor = ConsoleColor.Cyan ;
-     gstrError400 = GetWebPage ("/errors/400.html") ;
-     gstrError405 = GetWebPage ("/errors/405.html") ;
-     gstrError500 = GetWebPage ("/errors/500.html") ;
-     Console.WriteLine ("") ;
-     Console.ForegroundColor = ConsoleColor.White ;
-// Convert page strings into byte arrays
-     gaPage400 = Encoding.ASCII.GetBytes (gstrError400) ;
-     gaPage405 = Encoding.ASCII.GetBytes (gstrError405) ;
-     gaPage500 = Encoding.ASCII.GetBytes (gstrError500) ;
+     gaPage400 = GetWebPage ("/errors/400.html") ;
+     gaPage405 = GetWebPage ("/errors/405.html") ;
+     gaPage500 = GetWebPage ("/errors/500.html") ;
+// Display blank line and switch to default output colour
+     CConsole.WriteLine (ConsoleColour.FgWhite) ;
+// Wait until exception has been reported before proceeding
+     CConsole.Wait () ;
      return true ;
 }
 
@@ -343,19 +342,19 @@ public static async void ServiceThread (Object oContext)
      f_message  = null ;
 // Send info to console window without terminating the console line
      strLine = DisplayEvent (f_request) ;
-// Check if any known Domain Name is provided in client request
-     if (! CheckDomains (f_request))
-     {
-          strLine += ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
-          goto close_channel ;
-     }
 // Check if HTTP method is supported
      if (! CheckMethod (f_request.HttpMethod))
      {
           strLine += ErrorReflex (f_response, HttpStatusCode.MethodNotAllowed) ;
           goto close_channel ;
      }
-// Default to bad request
+// Check if any known Domain Name is provided in client request
+     if (! CheckDomains (f_request))
+     {
+          strLine += ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
+          goto close_channel ;
+     }
+// Default to internal error
      iStatus   = (int) HttpStatusCode.InternalServerError ;
      strStatus = "Internal Server Error" ;
 // Attempt to create connection to localized server to process redirected requests
@@ -412,7 +411,7 @@ public static async void ServiceThread (Object oContext)
 
 close_channel:
 
-// Send the response and close channel to client
+// Send the response to the client and close the channel
      f_response.Close () ;
 // Queue line to console
      CConsole.WriteLine (strLine) ;
@@ -579,7 +578,7 @@ private static string GetElementColour (HttpListenerRequest f_request)
 //-----------------------------------------------------------------------------
 //                                                                   GetWebPage
 //-----------------------------------------------------------------------------
-public static string GetWebPage (string strUri)
+public static byte[] GetWebPage (string strUri)
 {
      string    strPage ;
      string    strQuery ;
@@ -591,7 +590,7 @@ public static string GetWebPage (string strUri)
 
 // Init
      strPage   = string.Format ("<p>Failed to preload <b>{0}</b> from localized server.</p>", strUri) ;
-     strStatus = "Failed" ;
+     strStatus = string.Format ("{0}[Failed]{1}", ConsoleColour.FgRed, ConsoleColour.FgWhite) ;
 // Construct server query
      strQuery = string.Format ("http://{0}{1}", gstrServerIp, strUri) ;
 // Attempt to fetch page from localized server
@@ -601,19 +600,19 @@ public static string GetWebPage (string strUri)
           response  = wcClient.OpenRead (strQuery) ;
           reader    = new StreamReader (response, Encoding.ASCII) ;
           strPage   = reader.ReadToEnd () ;
-          strStatus = "OK" ;
+          strStatus = string.Format ("{0}OK{1}", ConsoleColour.FgGreen, ConsoleColour.FgWhite) ;
           response.Close () ;
      }
      catch (Exception e)
      {
      // Immediately report exception on console
-          CConsole.WriteLine (ReportException (e)) ;
-     // Wait until exception has been reported before proceeding
-          CConsole.Wait () ;
+          //CConsole.WriteLine (ReportException (e)) ;
+          strStatus = string.Format ("{0}{1}{2}", ConsoleColour.FgRed + ConsoleColour.BgBlack, e.Message, ConsoleColour.FgWhite + ConsoleColour.BgDarkBlue) ;
      }
 // Report action and outcome
-     Console.WriteLine ("Preload \"{0}\" ({1} Bytes) - [{2}]", strQuery, strPage.Length, strStatus) ;
-     return strPage ;
+     CConsole.WriteLine (string.Format ("{0}Preload \"{1}\" ({2} Bytes) - {3}", ConsoleColour.FgYellow, strQuery, strPage.Length, strStatus)) ;
+// Convert to array of bytes - ready to be transmitted
+     return Encoding.ASCII.GetBytes (strPage) ;
 }
 
 

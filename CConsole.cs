@@ -180,7 +180,6 @@ public static string GetColourCode (ConsoleColor color, bool bfForeground)
 private static void OutputLine (string strEntry)
 {
      bool      bfBack ;
-     bool      bfEscape ;
      bool      bfFore ;
 
      int       iColour ;
@@ -193,7 +192,6 @@ private static void OutputLine (string strEntry)
 // Init
      bfBack    = false ;
      bfFore    = false ;
-     bfEscape  = false ;
      iColour   = 0 ;
      iSequence = 0 ;
 // Convert string to simple byte array
@@ -203,41 +201,38 @@ private static void OutputLine (string strEntry)
      {
      // Check if encountered escape character
           if (cChar == '¬')
+               iSequence = 1 ;
+     // Escape sequence state machine
+          switch (iSequence)
           {
-               bfEscape = true ;
-               continue ;
-          }
-     // Check if in escape sequence
-          if (bfEscape)
-          {
-          // Escape sequence state machine
-               switch (iSequence)
-               {
-                    case 0 :
-                         bfBack = (cChar == 'B') ;
-                         bfFore = (cChar == 'F') ;
-                         iSequence ++ ;
-                         break ;
+               case 0 :
+               // Write regular character to console
+                    Console.Write ((char) cChar) ;
+                    break ;
 
-                    case 1 :
-                         iColour = (int) cChar - 48 ;
-                         iSequence ++ ;
-                         break ;
+               case 1 :
+                    iSequence ++ ;
+                    break ;
 
-                    case 2 :
-                         iColour = (iColour * 10) + ((int) cChar - 48) ;
-                    // Output colour code
-                         SetColour (bfFore, bfBack, iColour) ;
-                    // Reset embedded colour trap
-                         iColour   = 0 ;
-                         iSequence = 0 ;
-                         bfEscape  = false ;
-                         break ;
-               }
-               continue ;
+               case 2 :
+                    bfBack = (cChar == 'B') ;
+                    bfFore = (cChar == 'F') ;
+                    iSequence ++ ;
+                    break ;
+
+               case 3 :
+                    iColour = (int) cChar - 48 ;
+                    iSequence ++ ;
+                    break ;
+
+               case 4 :
+                    iColour = (iColour * 10) + ((int) cChar - 48) ;
+               // Output colour code
+                    SetColour (bfFore, bfBack, iColour) ;
+               // Reset embedded colour trap
+                    iSequence = 0 ;
+                    break ;
           }
-     // Write regular character to console
-          Console.Write ((char) cChar) ;
      }
      Console.WriteLine () ;
 }
