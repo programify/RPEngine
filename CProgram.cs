@@ -1,13 +1,62 @@
 ﻿//*****************************************************************************
 //
-//                                                                     RPEngine
+//   RPEngine                                                          CProgram
+//   Open Source Edition
 //
 //*****************************************************************************
 /*
  *   Reverse Proxy Engine.
  *
  *   (c) Copyright 2021, Programify Ltd.
- *   All rights reserved.
+ *   All commercialization rights reserved.
+ *
+ *   RPEngine will become an HTTP/HTTPS reverse proxy server designed to 
+ *   operate as a firewalled load balancing router. Let's break that 
+ *   description down...
+ *
+ *   1)   Firewalled.
+ *
+ *        Only valid server requests are allowed to proceed to your production
+ *        servers. Most often, invalid and hostile requests arrive addressed
+ *        to your server's IP address - sometimes a completely different IP!
+ *
+ *        This simple check prevents many attacks which are domain-name blind.
+ *        Your attacker must at least know your domain name (or names) that 
+ *        your RPEngine is configured to recognise.
+ *
+ *        All requests to bogus domains or direct IP addresses are blocked
+ *        and the client end receives an error "400 - Bad Request". This takes
+ *        place within RPEngine with zero load on your production servers.
+ *
+ *        With our open source code you can craft you own Web Application
+ *        Firewall (WAF)[Ref.1] to weed out persistant attackers using tarpits 
+ *        or stone-walls, blocking by country, IP address range, agent-id, etc.
+ *
+ *   2)   Load balancing.
+ *
+ *        RPEngine can direct valid incoming traffic to one or more production
+ *        servers running on physically separate machine depending on your 
+ *        configuration.
+ *
+ *        For example your brochure website and image server can be physically
+ *        separated from your application server(s) to help speed up page
+ *        serving. Client sessions running on application servers have no 
+ *        impact on your front-of-house brochure web pages.
+ *
+ *   3)   Router.
+ *
+ *        A single instance of RPEngine can receive requests from multiple
+ *        domain names which can be concentrated or routed to a single server
+ *        or indeed physically separate and domain-specific servers.
+ *
+ *   This appplication is written in .NET C#, so while it's not as quick as C 
+ *   or Assembler, it might be easier to modify and maintain. This app does not 
+ *   claim to be super fast and all powerful, but it should cope with modest-
+ *   volume SME business installations. It is free after all!
+ *
+ *   References:
+ *
+ *        [1]. https://www.cloudflare.com/en-gb/learning/ddos/glossary/web-application-firewall-waf/
  */
 
 
@@ -26,9 +75,9 @@
 //                                                    Windows Defender Firewall
 //*****************************************************************************
 /*
- *   HttpListener is built on top of http.sys which will listen on the port 
- *   you specified on behalf of your program. You must limit your inbound rule 
- *   to system components only by:
+ *   Microsoft's HttpListener is built on top of http.sys which will listen on 
+ *   the port you specified on behalf of your program. You must limit your 
+ *   inbound rule to system components only by:
  *
  *   1.   Open Windows Defender Firewall with Advanced Security.
  *        Select "Inbound Rules".
@@ -37,12 +86,14 @@
  *        This program path is simply "system", next
  *        Allow the connection, next
  *        Apply rule to "Private and Public", next
- *        Give the rule a name "HTTP Visibility", 
+ *        Give the rule a name "HTTP.SYS Visibility", 
  *        The description "Allows remote access to applications using the system's .NET HTTP client.",
  *        and click finish.
  *
  *   3.   Double-click the rule to see the rule's properties dialog.
- *   4.   Select Protocol and Ports tab.
+ *
+ *   4.   Select the "Protocol and Ports" tab.
+ *
  *   5.   Protocol Type: TCP,
  *        Local Port: Specific Ports,
  *        enter underneath: "80, 443". Click OK.
@@ -54,17 +105,30 @@
 //*****************************************************************************
 /*
  *   14-12-21  Started development.
- *   18-12-21  v1.0; Save restore point before next release.
+ *
+ *   18-12-21  v1.0.
+ *             Save restore point before next significant release.
+ *
+ *   19-12-21  v1.1.
+ *             Multi-threaded service request handling with decoupled console
+ *             output thread.
  */
 
 
 //*****************************************************************************
-//                                                          Planned Development
+//                                                                 Known Issues
 //*****************************************************************************
 /*
- *   Manage spin-out of multiple threads to service incoming requests. This
- *   should provide a higher throughput since some string processing is
- *   required when verifying incoming client requests.
+ *   +    Cookies are not passed between client and localized server. We hope
+ *        to implement this feature some time in the future.
+ *
+ *   +    No way to stop application short of pressing 'Ctrl + C' a few times.
+ *        In practice it is unlikely you will want stop/start RPEngine since it 
+ *        is front-ending your web server(s). Perhaps during testing.
+ *
+ *   +    At least one stability issue exists where the app was seen to stop
+ *        responding until 'Ctrl + C' was pressed once. The causal scenario is 
+ *        currently unknown.
  */
 
 
@@ -76,6 +140,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Security.Principal;
@@ -83,35 +148,39 @@ using System.Reflection;
 
 
 //*****************************************************************************
-//                                                                  NSEngineApp
+//                                                                     RPEngine
 //*****************************************************************************
-namespace NSEngineApp
+namespace RPEngine
 {
 
 
 //=============================================================================
 //                                                                     CProgram
 //-----------------------------------------------------------------------------
-static class CProgram
+class CProgram
 {
-     public static byte[] gaPage400 ;        // Preloaded HTTP error [400] page.
+     static bool gbfRunServer ;       // Engine continues running while this flag is set true.
 
-     public static bool gbfRunServer ;       // Engine continues running while this flag is set true.
+     static byte[] gaPage400 ;        // Preloaded HTTP error [400] page.
+     static byte[] gaPage405 ;        // Preloaded HTTP error [405] page.
+     static byte[] gaPage500 ;        // Preloaded HTTP error [500] page.
 
-     public static string gstrDomains ;      // Config: Whitelist of valid domain names to serve.
-     public static string gstrError400 ;     // Config: Fully qualified URI to Error 400 page on localized server.
-     public static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
-     public static string gstrServerIp ;     // Config: "LocalizedServerIP" IP address of true localized server.
+     static string[] gastrDomains ;   // Array of valid domain names to serve.
 
-     public static string[] gastrDomains ;   // Array of valid domain names to serve.
-     public static string gstrHttp ;         // Fully qualified HTTP address and port to listen on.
-     public static string gstrHttps ;        // Fully qualified HTTPS address and port to listen on.
-     public static string gstrServer ;       // Fully qualified base address and port of localized server.
-     public static string gstrVersion ;      // Full version number for application including build code.
+     static string gstrDomains ;      // Config: Whitelist of valid domain names to serve.
+     static string gstrError400 ;     // Config: Fully qualified URI to Error 400 page on localized server.
+     static string gstrError405 ;     // Config: Fully qualified URI to Error 405 page on localized server.
+     static string gstrError500 ;     // Config: Fully qualified URI to Error 500 page on localized server.
+     static string gstrHttp ;         // Fully qualified HTTP address and port to listen on.
+     static string gstrHttps ;        // Fully qualified HTTPS address and port to listen on.
+     static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
+     static string gstrServer ;       // Fully qualified base address and port of localized server.
+     static string gstrServerIp ;     // Config: "LocalizedServerIP" IP address of true localized server.
+     static string gstrVersion ;      // Full version number for application including build code.
 
-     public static HttpClient   g_server ;        // Class support for localized server.
+     static HttpClient     g_server ;     // Class support for localized server.
 
-     public static HttpListener g_internet ;      // Reverse proxy server for Internet clients.
+     static HttpListener   g_internet ;   // Reverse proxy server for Internet clients.
 
 
 //-----------------------------------------------------------------------------
@@ -138,13 +207,24 @@ static void Main (string [] args)
      if (! ConnectLocalizedServer ())
           return ;
 
-// Invoke main server handler thread
-     Task listenTask = HandleIncomingConnections () ;
-// Wait for server thread to terminate is main control loop [thread blocking]
-     listenTask.GetAwaiter ().GetResult () ;
+// Use ThreadPool for a worker thread        
+     int minWorker, minIOC;  
+     ThreadPool.GetMinThreads(out minWorker, out minIOC);  
+     ThreadPool.SetMinThreads (4, minIOC);  
+     Console.WriteLine ("Using {0} worker threads.", minWorker) ;
+     Console.WriteLine ("") ;
 
-// Close the listenere
+// Start console service
+     CConsole.Start () ;
+
+// Invoke main server handler thread
+     HandleIncomingConnections () ;
+
+// Close the listenere (Stop Reverse Proxy Engine)
      g_internet.Close () ;
+
+     Console.WriteLine ("*** Press SPACE to exit app. ***") ;
+     Console.ReadKey () ;  
 }
 
 
@@ -214,10 +294,14 @@ public static bool ConnectLocalizedServer ()
 // Preload common error pages
      Console.ForegroundColor = ConsoleColor.Cyan ;
      gstrError400 = GetWebPage ("/errors/400.html") ;
+     gstrError405 = GetWebPage ("/errors/405.html") ;
+     gstrError500 = GetWebPage ("/errors/500.html") ;
      Console.WriteLine ("") ;
      Console.ForegroundColor = ConsoleColor.White ;
 // Convert page strings into byte arrays
      gaPage400 = Encoding.ASCII.GetBytes (gstrError400) ;
+     gaPage405 = Encoding.ASCII.GetBytes (gstrError405) ;
+     gaPage500 = Encoding.ASCII.GetBytes (gstrError500) ;
      return true ;
 }
 
@@ -225,9 +309,26 @@ public static bool ConnectLocalizedServer ()
 //-----------------------------------------------------------------------------
 //                                                    HandleIncomingConnections
 //-----------------------------------------------------------------------------
-public static async Task HandleIncomingConnections ()
+public static void HandleIncomingConnections ()
+{
+// Init
+     gbfRunServer = true ;
+// While a user hasn't visited the `shutdown` url, keep on handling requests
+     while (gbfRunServer)
+     {
+     // Pass an incoming connection to a server thread
+          ThreadPool.QueueUserWorkItem (ServiceThread, g_internet.GetContext ()) ;
+     }
+}
+
+
+//=============================================================================
+//                                                                ServiceThread
+//=============================================================================
+public static async void ServiceThread (Object oContext)
 {
      int       iStatus ;
+     string    strLine ;
      string    strStatus ;
 
      HttpListenerContext      f_context ;
@@ -235,84 +336,86 @@ public static async Task HandleIncomingConnections ()
      HttpListenerRequest      f_request ;
      HttpListenerResponse     f_response ;
 
-// Init
-     gbfRunServer = true ;
-// While a user hasn't visited the `shutdown` url, keep on handling requests
-     while (gbfRunServer)
+// Isolate request and response objects
+     f_context  = (HttpListenerContext) oContext ;
+     f_request  = f_context.Request ;
+     f_response = f_context.Response ;
+     f_message  = null ;
+// Send info to console window without terminating the console line
+     strLine = DisplayEvent (f_request) ;
+// Check if any known Domain Name is provided in client request
+     if (! CheckDomains (f_request))
      {
-          // Wait to receive a request [thread blocking]
-               f_context = g_internet.GetContext () ;
-          // Isolate request and response objects
-               f_request  = f_context.Request ;
-               f_response = f_context.Response ;
-               f_message  = null ;
-          // Send info to console window without terminating the console line
-               DisplayEvent (f_request) ;
-          // Check if any known Domain Name is provided in client request
-               if (! CheckDomains (f_request))
-               {
-                    ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
-                    goto close_channel ;
-               }
-          // Default to bad request
-               iStatus   = (int) HttpStatusCode.InternalServerError ;
-               strStatus = "Internal Server Error" ;
-          // Attempt to create connection to localized server to process redirected requests
-               try
-               {
-                    f_message = await g_server.GetAsync (f_request.Url.PathAndQuery) ;
-               // Report the HTTP Statuc Code
-                    iStatus = ((int) f_message.StatusCode) ;
-               }
-               catch (Exception e)
-               {
-                    ReportException (e) ;
-               }
-          // Transfer http status code
-               f_response.StatusCode = iStatus ;
-               if (f_message != null)
-                    strStatus = f_message.StatusCode.ToString () ;
-          // Report the HTTP status code
-               DisplayStatus ('[', iStatus, strStatus, ']') ;
-          // Abort request if page fetch failed
-               if (f_message == null)
-                    goto close_channel ;
-
-          // Fetch the localized server's response (file content)
-               byte[] abResponse = await f_message.Content.ReadAsByteArrayAsync () ;
-
-          // Check if the asset was found on the localized server
-               if (iStatus == (int) HttpStatusCode.OK)
-               {
-               // Prepare the response info
-                    if (f_message.Content.Headers.ContentType == null)
-                         f_response.ContentType = null ;
-                    else
-                         f_response.ContentType = f_message.Content.Headers.ContentType.ToString () ;
-               // Apply default encoding if required
-                    if (f_response.ContentEncoding == null)
-                         f_response.ContentEncoding = Encoding.UTF8 ;
-
-                    f_response.ContentLength64 = abResponse.LongLength ;
-                    f_response.KeepAlive       = false ;
-               }
-          // Return data over the Internet to the client
-               try
-               {
-               // Browser may have dumped the connection which is why we try/catch this write
-                    f_response.OutputStream.Write (abResponse, 0, abResponse.Length) ;
-               }
-               catch (Exception e)
-               {
-                    ReportException (e) ;
-                    goto close_channel ;
-               }
-
-     close_channel:
-
-          // Send the response and close channel to client
-               f_response.Close () ;
+          strLine += ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
+          goto close_channel ;
      }
+// Check if HTTP method is supported
+     if (! CheckMethod (f_request.HttpMethod))
+     {
+          strLine += ErrorReflex (f_response, HttpStatusCode.MethodNotAllowed) ;
+          goto close_channel ;
+     }
+// Default to bad request
+     iStatus   = (int) HttpStatusCode.InternalServerError ;
+     strStatus = "Internal Server Error" ;
+// Attempt to create connection to localized server to process redirected requests
+     try
+     {
+     // GET Method
+          f_message = await g_server.GetAsync (f_request.Url.PathAndQuery) ;
+     // Report the HTTP Statuc Code
+          iStatus = ((int) f_message.StatusCode) ;
+     }
+     catch (Exception e)
+     {
+          strLine += ReportException (e) ;
+     }
+// Transfer http status code
+     f_response.StatusCode = iStatus ;
+     if (f_message != null)
+          strStatus = f_message.StatusCode.ToString () ;
+// Report the HTTP status code
+     strLine += DisplayStatus ('[', iStatus, strStatus, ']') ;
+// Abort request if page fetch failed
+     if (f_message == null)
+          goto close_channel ;
+
+// Fetch the localized server's response (file content)
+     byte[] abResponse = await f_message.Content.ReadAsByteArrayAsync () ;
+
+// Check if the asset was found on the localized server
+     if (iStatus == (int) HttpStatusCode.OK)
+     {
+     // Prepare the response info
+          if (f_message.Content.Headers.ContentType == null)
+               f_response.ContentType = null ;
+          else
+               f_response.ContentType = f_message.Content.Headers.ContentType.ToString () ;
+     // Apply default encoding if required
+          if (f_response.ContentEncoding == null)
+               f_response.ContentEncoding = Encoding.UTF8 ;
+
+          f_response.ContentLength64 = abResponse.LongLength ;
+          f_response.KeepAlive       = false ;
+     }
+// Return data over the Internet to the client
+     try
+     {
+     // Browser may have dumped the connection which is why we try/catch this write
+          f_response.OutputStream.Write (abResponse, 0, abResponse.Length) ;
+     }
+     catch (Exception e)
+     {
+          strLine += ReportException (e) ;
+          goto close_channel ;
+     }
+
+close_channel:
+
+// Send the response and close channel to client
+     f_response.Close () ;
+// Queue line to console
+     CConsole.WriteLine (strLine) ;
 }
 
 
@@ -321,14 +424,19 @@ public static async Task HandleIncomingConnections ()
 //-----------------------------------------------------------------------------
 /*
  *   Checks the "DomainNames" list for matching domain or sub-domain names.
- *   Most hacks appear to use the IP address (since they are easier to generate.
-value="programify.com, www.programify.com, 10.0.0.5" />
+ *   Most attackers appear to use the IP address because they are easier to 
+ *   generate than enumerating domain names.
+ *
+ *   You can include IP addresses in the domain name whitelist if you wish, 
+ *   but this will increase your exposure to hostile clients. It is most likely 
+ *   that you would use this capability during testing.
  */
 public static bool CheckDomains (HttpListenerRequest f_request)
 {
 // Reject if no hostname supplied
      if (f_request.UserHostName == null)
           return false ;
+
 // Accept is client-supplied domain name is recognised on white list
      for (var iIndex = 0 ; iIndex < gastrDomains.Length ; iIndex ++ )
      {
@@ -341,6 +449,27 @@ public static bool CheckDomains (HttpListenerRequest f_request)
 
 
 //-----------------------------------------------------------------------------
+//                                                                  CheckMethod
+//-----------------------------------------------------------------------------
+/*
+ *   HTTP request methods are:
+ *
+ *        CONNECT, DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, TRACE.
+ *
+ *   Currently, only GET is supported by RPEngine's ServiceThread().
+ */
+public static bool CheckMethod (string strMethod)
+{
+// Approve only these methods
+     if (strMethod.Equals ("GET"))
+          return true ;
+
+// Reject all other methods
+     return false ;
+}
+
+
+//-----------------------------------------------------------------------------
 //                                                                  ErrorReflex
 //-----------------------------------------------------------------------------
 /*
@@ -348,11 +477,11 @@ public static bool CheckDomains (HttpListenerRequest f_request)
  *   preloaded. This reduces the load on the system as the localized server
  *   is not involved.
  */
-public static void ErrorReflex (HttpListenerResponse response, HttpStatusCode status)
+public static string ErrorReflex (HttpListenerResponse response, HttpStatusCode status)
 {
      byte[]    abBuffer ;
      int       iStatus ;
-     string    strPage ;
+     string    strLine ;
      string    strStatus ;
 
 // Init
@@ -361,16 +490,13 @@ public static void ErrorReflex (HttpListenerResponse response, HttpStatusCode st
 // Distribute on HTTP status code
      switch (iStatus)
      {
-          case 400 :  abBuffer = gaPage400 ; strStatus = "Bad Request" ; break ;
+          case 400 :  abBuffer = gaPage400 ; strStatus = "Bad Request" ;            break ;
+          case 405 :  abBuffer = gaPage405 ; strStatus = "Method Not Allowed" ;     break ;
 
-          default :
-               strStatus = "Internal Server Error" ;
-               strPage   = string.Format ("<h1>Internal Server Error</h1><p>HTTP Status Code <b>{0}</b> is not being handled.</p>", iStatus) ;
-               abBuffer  = Encoding.ASCII.GetBytes (strPage) ;
-               break ;
+          default :   abBuffer = gaPage500 ; strStatus = "Internal Server Error" ;  break ;
      }
 // Report error on console
-     DisplayStatus ('<', iStatus, strStatus, '>') ;
+     strLine = DisplayStatus ('<', iStatus, strStatus, '>') ;
 // Return data over the Internet to the client
      try
      {
@@ -379,66 +505,74 @@ public static void ErrorReflex (HttpListenerResponse response, HttpStatusCode st
      }
      catch (Exception e)
      {
-          ReportException (e) ;
+          strLine += ReportException (e) ;
      }
+// Return console line
+     return strLine ;
 }
 
 
 //-----------------------------------------------------------------------------
 //                                                                DisplayStatus
 //-----------------------------------------------------------------------------
-public static void DisplayStatus (char cStart, int iStatus, string strStatus, char cEnd)
+public static string DisplayStatus (char cStart, int iStatus, string strStatus, char cEnd)
 {
+     string    strFg ;
+
 // Colourize server status code
      if (iStatus <= 299)
-          Console.ForegroundColor = ConsoleColor.Green ;
+          strFg = ConsoleColour.FgGreen ;
      else
-          Console.ForegroundColor = ConsoleColor.Red ;
+          strFg = ConsoleColour.FgRed ;
 // Report the HTTP status code
-     string strReport = string.Format ("{0}{1} - {2}{3}", cStart, iStatus, strStatus, cEnd) ;
-     Console.WriteLine (strReport) ;
-     Console.ForegroundColor = ConsoleColor.White ;
+     return string.Format ("{0}{1}{2} - {3}{4}", strFg, cStart, iStatus, strStatus, cEnd) ;
 }
 
 
 //-----------------------------------------------------------------------------
 //                                                                 DisplayEvent
 //-----------------------------------------------------------------------------
-public static void DisplayEvent (HttpListenerRequest f_request)
+public static string DisplayEvent (HttpListenerRequest f_request)
 {
+     string    strLine ;
+
      DateTime  dtNow = DateTime.Now ;
 
 // Get system timestamp
-     string strDate = string.Format ("{0:0000}-{1:00}-{2:00} ", dtNow.Year, dtNow.Month, dtNow.Day) ;
-     string strTime = string.Format ("{0:00}:{1:00}:{2:00}:{3:000}  ", dtNow.Hour, dtNow.Minute, dtNow.Second, dtNow.Millisecond) ;
+     string strDate = string.Format ("{0:0000}-{1:00}-{2:00}", dtNow.Year, dtNow.Month, dtNow.Day) ;
+     string strTime = string.Format ("{0:00}:{1:00}:{2:00}:{3:000}", dtNow.Hour, dtNow.Minute, dtNow.Second, dtNow.Millisecond) ;
 // Display datestamp in sortable format
-     Console.BackgroundColor = ConsoleColor.DarkBlue ; // rgb 0,0,32
-     Console.ForegroundColor = ConsoleColor.Gray ;
-     Console.Write (strDate) ;
-     Console.Write (strTime) ;
-     Console.ForegroundColor = ConsoleColor.White ;
-
+     strLine  = string.Format ("{0}{1}{2} {3}  ", ConsoleColour.BgDarkBlue, ConsoleColour.FgGray, strDate, strTime) ;
 // Report IP address
-     Console.Write (f_request.RemoteEndPoint.Address.ToString ().PadRight (15) + " ") ;
-
-// Colourize info about the request
-     if (f_request.Url.LocalPath.Equals ("/"))
-          Console.ForegroundColor = ConsoleColor.Yellow ;
-     if (f_request.Url.LocalPath.Contains (".html"))
-          Console.ForegroundColor = ConsoleColor.Yellow ;
-     if (f_request.Url.LocalPath.Contains (".js"))
-          Console.ForegroundColor = ConsoleColor.DarkYellow ;
-
+     strLine += string.Format ("{0}{1} ", ConsoleColour.FgWhite, f_request.RemoteEndPoint.Address.ToString ().PadRight (15)) ;
+// Determine colour based on the client request
+     strLine += GetElementColour (f_request) ;
 // Report remote user accessing this proxy server
-     Console.Write (string.Format ("{0} ", f_request.HttpMethod)) ;
-     Console.Write (string.Format ("{0} ", f_request.Url.ToString ())) ;
+     strLine += string.Format ("{0} ", f_request.HttpMethod) ;
+     strLine += string.Format ("{0} ", f_request.Url.ToString ()) ;
 // Report possible browser or bot identifier
      if (f_request.UserAgent != null)
-     {
-          Console.ForegroundColor = ConsoleColor.Gray ;
-          Console.Write (string.Format ("({0})", f_request.UserAgent)) ;
-     }
-     Console.ForegroundColor = ConsoleColor.White ;
+          strLine += string.Format ("{0}({1}) ", ConsoleColour.FgGray, f_request.UserAgent) ;
+// Revert console to default foreground colour
+     strLine += ConsoleColour.FgWhite ;
+     return strLine ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                             GetElementColour
+//-----------------------------------------------------------------------------
+private static string GetElementColour (HttpListenerRequest f_request)
+{
+// Determine colour based on the path and filename extension code
+     if (f_request.Url.LocalPath.Equals ("/"))
+          return ConsoleColour.FgYellow ;
+     if (f_request.Url.LocalPath.Contains (".html"))
+          return ConsoleColour.FgYellow ;
+     if (f_request.Url.LocalPath.Contains (".js"))
+          return ConsoleColour.FgDarkYellow ;
+// Default to neutral colour
+     return ConsoleColour.FgWhite ;
 }
 
 
@@ -472,7 +606,10 @@ public static string GetWebPage (string strUri)
      }
      catch (Exception e)
      {
-          ReportException (e) ;
+     // Immediately report exception on console
+          CConsole.WriteLine (ReportException (e)) ;
+     // Wait until exception has been reported before proceeding
+          CConsole.Wait () ;
      }
 // Report action and outcome
      Console.WriteLine ("Preload \"{0}\" ({1} Bytes) - [{2}]", strQuery, strPage.Length, strStatus) ;
@@ -483,12 +620,9 @@ public static string GetWebPage (string strUri)
 //-----------------------------------------------------------------------------
 //                                                              ReportException
 //-----------------------------------------------------------------------------
-public static void ReportException (Exception e)
+public static string ReportException (Exception e)
 {
-// Report failure to write back contents
-     Console.ForegroundColor = ConsoleColor.Red ;
-     Console.WriteLine ("*** " + e.Message) ;
-     Console.ForegroundColor = ConsoleColor.White ;
+     return string.Format ("\n{0}*** {1}\n{2}", ConsoleColour.FgRed, e.Message, ConsoleColour.FgWhite) ;
 }
 
 
