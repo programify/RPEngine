@@ -29,7 +29,7 @@
  *        place within RPEngine with zero load on your production servers.
  *
  *        With our open source code you can craft you own Web Application
- *        Firewall (WAF)[Ref.1] to weed out persistant attackers using tarpits 
+ *        Firewall (WAF)[R1] to weed out persistant attackers using tarpits 
  *        or stone-walls, blocking by country, IP address range, agent-id, etc.
  *
  *   2)   Load balancing.
@@ -56,7 +56,39 @@
  *
  *   References:
  *
- *        [1]. https://www.cloudflare.com/en-gb/learning/ddos/glossary/web-application-firewall-waf/
+ *        [R1]. https://www.cloudflare.com/en-gb/learning/ddos/glossary/web-application-firewall-waf/
+ */
+
+
+//*****************************************************************************
+//                                                                 Command Line
+//*****************************************************************************
+/*
+ *   Syntax:
+ *
+ *        RPENGINE  [<switches>]
+ *
+ *   Where:
+ *
+ *        <switches>          One or more command line switches.
+ *
+ *   Switches:
+ *
+ *        -eco                Enable Console Output.
+ *                            Display each server request event in real-time.
+ *
+ *        -elo                Enable Log Output.
+ *                            Write server request events to the log file
+ *                            specified in "RPEngine.exe.config".
+ *
+ *        -wait               Wait for SPACE key before terminating app.
+ *
+ *   Notes:
+ *
+ *   +    Prefixing a switch or parameter with two hyphens will cause the entry 
+ *        to be ignored by the app's command line interpreter. E.g. (--elo)
+ *
+ *   +    The command line settings overrule the configuration file settings.
  */
 
 
@@ -116,6 +148,12 @@
  *             Method Not Allowed now reported before Bad Request.
  *             GetWebPage() consolidated.
  *             Spun-out SetWorkerThreads() from Main().
+ *
+ *   21-12-21  v1.2.
+ *             Added CommandLine() parameters "-eco", "-elo" and "-wait".
+ *   22-12-21  Document command line in comments.
+ *             Upgrade ServiceThread() to use new CRequest and CResponse.
+ *             Installed new WriteLog() function.
  */
 
 
@@ -151,6 +189,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Reflection;
 
@@ -167,30 +206,37 @@ namespace RPEngine
 //-----------------------------------------------------------------------------
 class CProgram
 {
-     static bool gbfRunServer ;       // Engine continues running while this flag is set true.
+     static bool gbfConsole ;           // True if "-eco" switch was supplied.
+     static bool gbfLog ;               // True if "-elo" switch was supplied.
+     static bool gbfRunServer ;         // Engine continues running while this flag is set true.
+     static bool gbfWait ;              // True if "-wait" switch was supplied.
 
-     static byte[] gaPage400 ;        // Preloaded HTTP error [400] page.
-     static byte[] gaPage405 ;        // Preloaded HTTP error [405] page.
-     static byte[] gaPage500 ;        // Preloaded HTTP error [500] page.
+     static byte[] gaPage400 ;          // Preloaded HTTP error [400] page.
+     static byte[] gaPage405 ;          // Preloaded HTTP error [405] page.
+     static byte[] gaPage500 ;          // Preloaded HTTP error [500] page.
 
-     static string[] gastrDomains ;   // Array of valid domain names to serve.
+     static string[] gastrDomains ;     // Array of valid domain names to serve.
 
-     static string gstrDomains ;      // Config: Whitelist of valid domain names to serve.
-     static string gstrHttp ;         // Fully qualified HTTP address and port to listen on.
-     static string gstrHttps ;        // Fully qualified HTTPS address and port to listen on.
-     static string gstrProxyIp ;      // Config: "ReverseProxyIP" RPEngine's host IP address.
-     static string gstrServer ;       // Fully qualified base address and port of localized server.
-     static string gstrServerIp ;     // Config: "LocalizedServerIP" IP address of true localized server.
+     static string gstrDomains ;        // Config: Whitelist of valid domain names to serve.
+     static string gstrHttp ;           // Fully qualified HTTP address and port to listen on.
+     static string gstrHttps ;          // Fully qualified HTTPS address and port to listen on.
+     static string gstrLogFolder ;      // Folder specification where log files are recorded.
+     static string gstrLogName ;        // Suffix to full name of log file. Name is prefixed with a full time stamp.
+     static string gstrProxyIp ;        // Config: "ReverseProxyIP" RPEngine's host IP address.
+     static string gstrServer ;         // Fully qualified base address and port of localized server.
+     static string gstrServerIp ;       // Config: "LocalizedServerIP" IP address of true localized server.
 
-     static HttpClient     g_server ;     // Class support for localized server.
+     static HttpClient     g_server ;   // Class support for localized server.
 
-     static HttpListener   g_internet ;   // Reverse proxy server for Internet clients.
+     static HttpListener   g_internet ; // Reverse proxy server for Internet clients.
+
+     static readonly object   g_lockLog = new object () ;
 
 
 //-----------------------------------------------------------------------------
 //                                                                         Main
 //-----------------------------------------------------------------------------
-static void Main ()
+static void Main (string[] astrArgs)
 {
 // Prepare console task's window
      Console.Title = "RPEngine - Reverse Proxy Engine" ;
@@ -199,28 +245,72 @@ static void Main ()
      Console.WriteLine ("RPEngine v{0}", GetBuildVersion ()) ;
      Console.WriteLine ("Reverse Proxy Engine. (c) 2021, Programify.") ;
      Console.WriteLine ("") ;
+// Perform all activities before the engine can run
+     if (PrepareApp (astrArgs))
+     {
+     // Application's principal activity 
+          try
+          {
+          // Invoke main server handler thread
+               HandleIncomingConnections () ;
+          }
+          catch (Exception e)
+          {
+               Console.WriteLine (string.Format ("\n*** {1}\n", e.Message)) ;
+          }
+     }
+// Flush unreported console text
+     CConsole.WaitEmptyQueue () ;
+// Close the listener (Stop Reverse Proxy Engine)
+     if (g_internet != null)
+          g_internet.Close () ;
+// Close the app's log file
+     CLog.Close () ;
+// Option to wait on exit
+     if (gbfWait)
+     {
+          CConsole.WriteLine (ConsoleColour.FgGray + "*** Press ESC to exit app.") ;
+          CConsole.WaitKeyDown ((char) ConsoleKey.Escape) ;
+     }
+// Terminate this application
+     Environment.Exit (0) ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                   PrepareApp
+//-----------------------------------------------------------------------------
+private static bool PrepareApp (string[] astrArgs)
+{
+// Global inits
+     gbfConsole = false ;
+     gbfLog     = false ;
+     gbfWait    = false ;
+// Start thread-buffered console service
+     CConsole.Start () ;
 
 // Load configuration
      if (! GetConfiguration ())
-          return ;
+          return false ;
+// Process command line arguments and parameters (can override config)
+     if (! CommandLine (astrArgs))
+          return false ;
 // Start listening for incoming http connections
      if (! StartReverseProxy ())
-          return ;
+          return false ;
 // Connect to localized server which actually handles the Internet client's requests
      if (! ConnectLocalizedServer ())
-          return ;
+          return false ;
+// Check if a log file is required
+     if (gbfLog)
+     {
+     // Attempt to create a new log file
+          if (! CLog.Open (gstrLogFolder, gstrLogName))
+               return false ;
+     }
 
-// Start console service
-     CConsole.Start () ;
-
-// Invoke main server handler thread
-     HandleIncomingConnections () ;
-
-// Close the listenere (Stop Reverse Proxy Engine)
-     g_internet.Close () ;
-
-     Console.WriteLine ("*** Press SPACE to exit app. ***") ;
-     Console.ReadKey () ;  
+// Good start
+     return true ;
 }
 
 
@@ -230,9 +320,11 @@ static void Main ()
 public static bool GetConfiguration ()
 {
 // Get network settings
-     gstrProxyIp  = ConfigurationManager.AppSettings ["ReverseProxyIP"] ;
-     gstrServerIp = ConfigurationManager.AppSettings ["LocalizedServerIP"] ;
-     gstrDomains  = ConfigurationManager.AppSettings ["DomainNames"] ;
+     gstrDomains   = ConfigurationManager.AppSettings ["DomainNames"] ;
+     gstrLogFolder = ConfigurationManager.AppSettings ["LogFolder"] ;
+     gstrLogName   = ConfigurationManager.AppSettings ["LogName"] ;
+     gstrServerIp  = ConfigurationManager.AppSettings ["LocalizedServerIP"] ;
+     gstrProxyIp   = ConfigurationManager.AppSettings ["ReverseProxyIP"] ;
 
 // Construct reverse proxy address (this code runs at this location)
      gstrHttp  = "http://"  + gstrProxyIp + ":80/" ;
@@ -248,6 +340,67 @@ public static bool GetConfiguration ()
 // Use size of ThreadPool for a worker thread
      SetWorkerThreads () ;
      return true ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                  CommandLine
+//-----------------------------------------------------------------------------
+private static bool CommandLine (string[] astrArgs)
+{
+     bool      bfOkay ;
+     int       iIndex ;
+     string    strSwitchName ;
+
+     SwitchId  swIdent ;
+
+// Init
+     bfOkay = true ;
+// Enumerate the command line arguments
+     for (iIndex = 0 ; iIndex < astrArgs.Length ; iIndex ++)
+     {
+     // Isolate each switch name in turn
+          strSwitchName = astrArgs [iIndex] ;
+     // Ignore switch if it begins with a double hyphen
+          if (strSwitchName.StartsWith ("--"))
+               continue ;
+     // Attempt to identify the switch name
+          swIdent = GetSwitchId (strSwitchName) ;
+     // Handle the outcome of that attempt
+          switch (swIdent)
+          {
+               case SwitchId.EnableConsole :  gbfConsole = true ;  break ;
+               case SwitchId.EnableLog :      gbfLog     = true ;  break ;
+               case SwitchId.Wait :           gbfWait    = true ;  break ;
+
+               case SwitchId.Unknown :
+                    Console.WriteLine (string.Format ("Command line switch '{0}' is not recognised.", strSwitchName)) ;
+                    bfOkay = false ;
+                    break ;
+          }
+     }
+     return bfOkay ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                  GetSwitchId
+//-----------------------------------------------------------------------------
+private static SwitchId GetSwitchId (string strName)
+{
+// Ensure name is in lower case
+     strName = strName.ToLower () ;
+
+// Check against known switch names
+     if (strName.Equals ("-eco"))
+          return SwitchId.EnableConsole ;
+     if (strName.Equals ("-elo"))
+          return SwitchId.EnableLog ;
+     if (strName.Equals ("-wait"))
+          return SwitchId.Wait ;
+
+// Switch name is not recognised
+     return SwitchId.Unknown ;
 }
 
 
@@ -313,7 +466,7 @@ public static bool ConnectLocalizedServer ()
 // Display blank line and switch to default output colour
      CConsole.WriteLine (ConsoleColour.FgWhite) ;
 // Wait until exception has been reported before proceeding
-     CConsole.Wait () ;
+     CConsole.WaitEmptyQueue () ;
      return true ;
 }
 
@@ -325,7 +478,6 @@ public static void HandleIncomingConnections ()
 {
 // Init
      gbfRunServer = true ;
-// While a user hasn't visited the `shutdown` url, keep on handling requests
      while (gbfRunServer)
      {
      // Pass an incoming connection to a server thread
@@ -345,26 +497,32 @@ public static async void ServiceThread (Object oContext)
 
      HttpListenerContext      f_context ;
      HttpResponseMessage      f_message ;
-     HttpListenerRequest      f_request ;
-     HttpListenerResponse     f_response ;
 
+     CRequest       c_request ;
+     CResponse      c_response ;
+
+// Init
+     strLine = "" ;
 // Isolate request and response objects
      f_context  = (HttpListenerContext) oContext ;
-     f_request  = f_context.Request ;
-     f_response = f_context.Response ;
+     c_request  = new CRequest  (f_context.Request) ;
+     c_response = new CResponse (f_context.Response) ;
      f_message  = null ;
 // Send info to console window without terminating the console line
-     strLine = DisplayEvent (f_request) ;
+     if (gbfConsole)
+          strLine = DisplayEvent (c_request) ;
 // Check if HTTP method is supported
-     if (! CheckMethod (f_request.HttpMethod))
+     if (! CheckMethod (c_request.HttpMethod))
      {
-          strLine += ErrorReflex (f_response, HttpStatusCode.MethodNotAllowed) ;
+          if (gbfConsole)
+               strLine += ErrorReflex (c_response, HttpStatusCode.MethodNotAllowed) ;
           goto close_channel ;
      }
 // Check if any known Domain Name is provided in client request
-     if (! CheckDomains (f_request))
+     if (! CheckDomains (c_request.UserHostName))
      {
-          strLine += ErrorReflex (f_response, HttpStatusCode.BadRequest) ;
+          if (gbfConsole)
+               strLine += ErrorReflex (c_response, HttpStatusCode.BadRequest) ;
           goto close_channel ;
      }
 // Default to internal error
@@ -374,20 +532,22 @@ public static async void ServiceThread (Object oContext)
      try
      {
      // GET Method
-          f_message = await g_server.GetAsync (f_request.Url.PathAndQuery) ;
+          f_message = await g_server.GetAsync (c_request.PathAndQuery) ;
      // Report the HTTP Statuc Code
           iStatus = ((int) f_message.StatusCode) ;
      }
      catch (Exception e)
      {
-          strLine += ReportException (e) ;
+          if (gbfConsole)
+               strLine += FormatException (e.Message) ;
      }
 // Transfer http status code
-     f_response.StatusCode = iStatus ;
+     c_response.StatusCode = iStatus ;
      if (f_message != null)
           strStatus = f_message.StatusCode.ToString () ;
 // Report the HTTP status code
-     strLine += DisplayStatus ('[', iStatus, strStatus, ']') ;
+     if (gbfConsole)
+          strLine += DisplayStatus ('[', iStatus, strStatus, ']') ;
 // Abort request if page fetch failed
      if (f_message == null)
           goto close_channel ;
@@ -400,34 +560,44 @@ public static async void ServiceThread (Object oContext)
      {
      // Prepare the response info
           if (f_message.Content.Headers.ContentType == null)
-               f_response.ContentType = null ;
+               c_response.ContentType = null ;
           else
-               f_response.ContentType = f_message.Content.Headers.ContentType.ToString () ;
+               c_response.ContentType = f_message.Content.Headers.ContentType.ToString () ;
      // Apply default encoding if required
-          if (f_response.ContentEncoding == null)
-               f_response.ContentEncoding = Encoding.UTF8 ;
+          if (c_response.ContentEncoding == null)
+               c_response.ContentEncoding = Encoding.UTF8 ;
 
-          f_response.ContentLength64 = abResponse.LongLength ;
-          f_response.KeepAlive       = false ;
+          c_response.ContentLength = abResponse.LongLength ;
+          //c_response.KeepAlive     = false ;
      }
 // Return data over the Internet to the client
      try
      {
-     // Browser may have dumped the connection which is why we try/catch this write
-          f_response.OutputStream.Write (abResponse, 0, abResponse.Length) ;
+     // Respond to request
+          c_response.ContentLength = abResponse.Length ;
+          c_response.OutputStream.Write (abResponse, 0, abResponse.Length) ;
+          //c_response.OutputStream.Close () ;
      }
      catch (Exception e)
      {
-          strLine += ReportException (e) ;
+     // Browser may have dumped the connection which is why we try/catch this write
+          if (gbfConsole)
+               strLine += FormatException (e.Message) ;
           goto close_channel ;
      }
 
 close_channel:
 
-// Send the response to the client and close the channel
-     f_response.Close () ;
 // Queue line to console
-     CConsole.WriteLine (strLine) ;
+     if (gbfConsole)
+     {
+          CConsole.WriteLine (strLine) ;
+          CConsole.WaitEmptyQueue () ;
+     }
+     if (gbfLog)
+          WriteLog (c_request, c_response) ;
+// Send the response to the client and close the channel
+     c_response.OutputStream.Close () ;
 }
 
 
@@ -443,16 +613,16 @@ close_channel:
  *   but this will increase your exposure to hostile clients. It is most likely 
  *   that you would use this capability during testing.
  */
-public static bool CheckDomains (HttpListenerRequest f_request)
+public static bool CheckDomains (string strHostName)
 {
 // Reject if no hostname supplied
-     if (f_request.UserHostName == null)
+     if (strHostName == null)
           return false ;
 
 // Accept is client-supplied domain name is recognised on white list
      for (var iIndex = 0 ; iIndex < gastrDomains.Length ; iIndex ++ )
      {
-          if (f_request.UserHostName.Equals (gastrDomains [iIndex]))
+          if (strHostName.Equals (gastrDomains [iIndex]))
                return true ;
      }
 // Reject all other domain requests
@@ -489,7 +659,7 @@ public static bool CheckMethod (string strMethod)
  *   preloaded. This reduces the load on the system as the localized server
  *   is not involved.
  */
-public static string ErrorReflex (HttpListenerResponse response, HttpStatusCode status)
+public static string ErrorReflex (CResponse response, HttpStatusCode status)
 {
      byte[]    abBuffer ;
      int       iStatus ;
@@ -516,7 +686,7 @@ public static string ErrorReflex (HttpListenerResponse response, HttpStatusCode 
      }
      catch (Exception e)
      {
-          strLine += ReportException (e) ;
+          strLine += FormatException (e.Message) ;
      }
 // Return console line
      return strLine ;
@@ -543,7 +713,7 @@ public static string DisplayStatus (char cStart, int iStatus, string strStatus, 
 //-----------------------------------------------------------------------------
 //                                                                 DisplayEvent
 //-----------------------------------------------------------------------------
-public static string DisplayEvent (HttpListenerRequest f_request)
+public static string DisplayEvent (CRequest c_request)
 {
      string    strLine ;
 
@@ -555,15 +725,14 @@ public static string DisplayEvent (HttpListenerRequest f_request)
 // Display datestamp in sortable format
      strLine  = string.Format ("{0}{1}{2} {3}  ", ConsoleColour.BgDarkBlue, ConsoleColour.FgGray, strDate, strTime) ;
 // Report IP address
-     strLine += string.Format ("{0}{1} ", ConsoleColour.FgWhite, f_request.RemoteEndPoint.Address.ToString ().PadRight (15)) ;
+     strLine += string.Format ("{0}{1} ", ConsoleColour.FgWhite, c_request.IpAddress.PadRight (15)) ;
 // Determine colour based on the client request
-     strLine += GetElementColour (f_request) ;
+     strLine += GetElementColour (c_request.LocalPath) ;
 // Report remote user accessing this proxy server
-     strLine += string.Format ("{0} ", f_request.HttpMethod) ;
-     strLine += string.Format ("{0} ", f_request.Url.ToString ()) ;
+     strLine += string.Format ("{0} ", c_request.HttpMethod) ;
+     strLine += string.Format ("{0} ", c_request.Url) ;
 // Report possible browser or bot identifier
-     if (f_request.UserAgent != null)
-          strLine += string.Format ("{0}({1}) ", ConsoleColour.FgGray, f_request.UserAgent) ;
+     strLine += string.Format ("{0}({1}) ", ConsoleColour.FgGray, c_request.UserAgent) ;
 // Revert console to default foreground colour
      strLine += ConsoleColour.FgWhite ;
      return strLine ;
@@ -573,15 +742,16 @@ public static string DisplayEvent (HttpListenerRequest f_request)
 //-----------------------------------------------------------------------------
 //                                                             GetElementColour
 //-----------------------------------------------------------------------------
-private static string GetElementColour (HttpListenerRequest f_request)
+private static string GetElementColour (string strLocalPath)
 {
 // Determine colour based on the path and filename extension code
-     if (f_request.Url.LocalPath.Equals ("/"))
+     if (strLocalPath.Equals ("/"))
           return ConsoleColour.FgYellow ;
-     if (f_request.Url.LocalPath.Contains (".html"))
+     if (strLocalPath.Contains (".html"))
           return ConsoleColour.FgYellow ;
-     if (f_request.Url.LocalPath.Contains (".js"))
+     if (strLocalPath.Contains (".js"))
           return ConsoleColour.FgDarkYellow ;
+
 // Default to neutral colour
      return ConsoleColour.FgWhite ;
 }
@@ -627,11 +797,11 @@ public static byte[] GetWebPage (string strUri)
 
 
 //-----------------------------------------------------------------------------
-//                                                              ReportException
+//                                                              FormatException
 //-----------------------------------------------------------------------------
-public static string ReportException (Exception e)
+public static string FormatException (string strMessage)
 {
-     return string.Format ("\n{0}*** {1}\n{2}", ConsoleColour.FgRed, e.Message, ConsoleColour.FgWhite) ;
+     return string.Format ("{0}*** {1}\n{2}", ConsoleColour.FgRed, strMessage, ConsoleColour.FgWhite) ;
 }
 
 
@@ -646,6 +816,8 @@ public static string ReportException (Exception e)
 public static string GetBuildVersion ()
 {
      int       iYear ;
+     string    strDate ;
+     string    strTime ;
 
      Assembly       assembly ;
      DateTime       writetime ;
@@ -663,10 +835,42 @@ public static string GetBuildVersion ()
      iYear  = writetime.Year ;
      iYear %= 100 ;
 // Construct date and time last written to
-     string strDate = string.Format ("{0:00}{1:00}{2:00}", iYear, writetime.Month, writetime.Day) ;
-     string strTime = string.Format ("{0:00}{1:00}{2:00}", writetime.Hour, writetime.Minute, writetime.Second) ;
+     strDate = string.Format ("{0:00}{1:00}{2:00}", iYear, writetime.Month, writetime.Day) ;
+     strTime = string.Format ("{0:00}{1:00}{2:00}", writetime.Hour, writetime.Minute, writetime.Second) ;
 // Construct version number with build date and time     
      return string.Format ("{0}.{1}.{2}.{3}", version.Major, version.Minor, strDate, strTime) ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                     WriteLog
+//-----------------------------------------------------------------------------
+public static void WriteLog (CRequest c_request, CResponse c_response)
+{
+// Check if thread safe entry
+     lock (g_lockLog)
+     {
+     // Output request details in CSV record
+          CLog.WriteCsvField ("[REQ]") ;
+          CLog.WriteCsvField (c_request.LogDate) ;
+          CLog.WriteCsvField (c_request.LogTime) ;
+          CLog.WriteCsvField (c_request.IpAddress) ;
+          CLog.WriteCsvField (c_request.HttpMethod) ;
+          CLog.WriteCsvField (c_request.Url) ;
+          CLog.WriteCsvField (c_request.UserAgent) ;
+          CLog.WriteCsvField (c_request.HeaderCount.ToString ()) ;
+          CLog.WriteCsvField (c_request.IsAuthenticated.ToString ()) ;
+          CLog.WriteCsvField (c_request.IsLocal.ToString ()) ;
+          CLog.WriteCsvField (c_request.IsSecure.ToString ()) ;
+     // Output response details in CSV record
+          CLog.WriteCsvField ("[RESP]") ;
+          CLog.WriteCsvField (c_response.StatusCode.ToString ()) ;
+          CLog.WriteCsvField (c_response.ContentType) ;
+          CLog.WriteCsvField (c_response.EncodingName) ;
+          CLog.WriteCsvField (c_response.ContentLength.ToString ()) ;
+     // Terminate record and flush buffers
+          CLog.WriteCsvEnd ("[END]") ;
+     }
 }
 
 

@@ -18,6 +18,7 @@
 /*
  *   18-12-21  Started development.
  *   20-12-21  Improved OutputLine() to simplify machine state code.
+ *   22-12-21  Installed WaitKeyDown().
  */
 
 
@@ -74,17 +75,16 @@ public static class ConsoleColour
 }
 
 
-
 //=============================================================================
 //                                                                     CConsole
 //-----------------------------------------------------------------------------
 static class CConsole
 {
-     private static Queue<string>   m_queue ;  // Queued output to the shared system console resource.
-
      private static bool      m_bfRunService ;
 
-     private static Thread    m_thread ;
+     private static Queue<string>  m_queue ;  // Queued output to the shared system console resource.
+
+     private static Thread         m_thread ;
 
 
 //=============================================================================
@@ -92,7 +92,7 @@ static class CConsole
 //-----------------------------------------------------------------------------
 static CConsole ()
 {
-     m_queue = new Queue<string>() ;
+     m_queue = new Queue<string> () ;
      m_queue.Clear () ;
 }
 
@@ -140,9 +140,9 @@ public static void Stop ()
 
 
 //-----------------------------------------------------------------------------
-//                                                                         Wait
+//                                                               WaitEmptyQueue
 //-----------------------------------------------------------------------------
-public static void Wait ()
+public static void WaitEmptyQueue ()
 {
 // Wait until no more lines are waiting for output
      while (m_queue.Count > 0)
@@ -150,6 +150,29 @@ public static void Wait ()
      // Exit if the service has been stopped (by another thread)
           if (! m_bfRunService)
                return ;
+     // Release CPU time
+          Thread.Sleep (50) ;
+     }
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                  WaitKeyDown
+//-----------------------------------------------------------------------------
+/*
+ *   WaitKeyDown() waits for the specified Unicode character key to be pressed.
+ */
+public static void WaitKeyDown (char cTarget)
+{
+// Loop forever until a key is pressed
+     while (true)
+     {
+          ConsoleKeyInfo cki = Console.ReadKey (true) ;
+
+     // Check if a console key has been pressed
+          if (cki.KeyChar == cTarget)
+               return ;
+
      // Release CPU time
           Thread.Sleep (50) ;
      }
@@ -258,7 +281,6 @@ public static void WriteLine (string strText)
 {
      m_queue.Enqueue (strText) ;
 }
-
 
 
 //*****************************************************************************

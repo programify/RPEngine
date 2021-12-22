@@ -64,7 +64,11 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CConsole.cs" />
+    <Compile Include="CLog.cs" />
     <Compile Include="CProgram.cs" />
+    <Compile Include="CRequest.cs" />
+    <Compile Include="CResponse.cs" />
+    <Compile Include="Enums.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Properties\Settings.Designer.cs">
       <AutoGen>True</AutoGen>
