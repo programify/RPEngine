@@ -44,7 +44,7 @@
  *        MAKECERT  -n "CN=ProgramifyCA"  -r  -sv D:\Apache24\ProgramifyCA.pvk  D:\Apache24\ProgramifyCA.cer
  *
  *             (Prompted to Create Private Key Password)
- *             Enter complex password, e.g.: 058d3d24-d1ac-4486-95ab-f32e27a4d6e9-ALPHA
+ *             Enter complex password, e.g.: 058d3d24-d1ac-4486-95ab-f32e27a4d6e9-EXAMPLE
  *
  *             (Prompted to Enter Key Password) - again.
  *
@@ -53,7 +53,7 @@
  *        MAKECERT -sk D:\Apache24\ProgramifySSL -iv D:\Apache24\ProgramifyCA.pvk -n "CN=ProgramifySSL" -ic D:\Apache24\ProgramifyCA.cer D:\Apache24\ProgramifySSL.cer -sr localmachine -ss MY
  *
  *             (Prompted to Enter Private Key Password)
- *             Enter same complex password, e.g.: 058d3d24-d1ac-4486-95ab-f32e27a4d6e9-ALPHA
+ *             Enter same complex password, e.g.: 058d3d24-d1ac-4486-95ab-f32e27a4d6e9-EXAMPLE
  *
  *   5.   Install ProgramifyCA certificate in your machine's Trusted Authority store.
  *
