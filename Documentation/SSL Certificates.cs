@@ -152,8 +152,8 @@
  *        the private .KEY data which you generated when you originally
  *        requested the SSL certificate from the vendors.
  *
- *        You will need to operate on the machine which is to host the
- *        application and that machine must have OpenSSL installed on it.
+ *        You will need (ideally?) to operate on the machine which is to host 
+ *        the application and that machine must have OpenSSL installed on it.
  *        Ideally the machine will also have the Apache server installed.
  *
  *   1.   Generate the PFX file from the private .KEY and CRT (SSL cert) files.

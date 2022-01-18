@@ -8,7 +8,7 @@
  *   Reverse Proxy Engine.
  *
  *   (c) Copyright 2021, Programify Ltd.
- *   All commercialization rights reserved.
+ *   All rights reserved.
  *
  *   RPEngine will become an HTTP/HTTPS reverse proxy server designed to 
  *   operate as a firewalled load balancing router. Let's break that 
@@ -154,6 +154,9 @@
  *   22-12-21  Document command line in comments.
  *             Upgrade ServiceThread() to use new CRequest and CResponse.
  *             Installed new WriteLog() function.
+ *   24-12-21  Add support for "HttpMethod" option in config file.
+ *   25-12-21  Installed WriteLogHeader().
+ *   26-12-21  Extended log file record to include new grouped HTTP headers.
  */
 
 
@@ -168,16 +171,25 @@
  *   +    Cookies are not passed between client and localized server. We hope
  *        to implement this feature some time in the future.
  *
- *   +    No way to stop application short of pressing 'Ctrl + C' a few times.
+ *   +    No way to stop application short of pressing 'Ctrl + C'.
  *        In practice it is unlikely you will want stop/start RPEngine since it 
- *        is front-ending your web server(s). Perhaps during testing.
+ *        is front-ending your web server(s). Perhaps required most during 
+ *        testing.
  *
  *   +    At least one stability issue exists where the app was seen to stop
  *        responding until 'Ctrl + C' was pressed once. The causal scenario is 
- *        currently unknown.
+ *        believed to be if the task window is selected (for copying text) by 
+ *        the mouse.
+ *
+ *   +    On some occassions the time at which a log entry appears on screen,
+ *        is several minutes or hours before the current system time. This may
+ *        be caused by the loosely coupled console queue but it not known how.
  */
 
 
+//*****************************************************************************
+//                                                                   References
+//*****************************************************************************
 using System;
 using System.Configuration;
 using System.Collections.Generic;
@@ -219,6 +231,7 @@ class CProgram
 
      static string gstrDomains ;        // Config: Whitelist of valid domain names to serve.
      static string gstrHttp ;           // Fully qualified HTTP address and port to listen on.
+     static string gstrHttpMethods ;    // Separated list of permitted HTTP Methods.
      static string gstrHttps ;          // Fully qualified HTTPS address and port to listen on.
      static string gstrLogFolder ;      // Folder specification where log files are recorded.
      static string gstrLogName ;        // Suffix to full name of log file. Name is prefixed with a full time stamp.
@@ -245,6 +258,7 @@ static void Main (string[] astrArgs)
      Console.WriteLine ("RPEngine v{0}", GetBuildVersion ()) ;
      Console.WriteLine ("Reverse Proxy Engine. (c) 2021, Programify.") ;
      Console.WriteLine ("") ;
+
 // Perform all activities before the engine can run
      if (PrepareApp (astrArgs))
      {
@@ -259,13 +273,9 @@ static void Main (string[] astrArgs)
                Console.WriteLine (string.Format ("\n*** {1}\n", e.Message)) ;
           }
      }
-// Flush unreported console text
-     CConsole.WaitEmptyQueue () ;
-// Close the listener (Stop Reverse Proxy Engine)
-     if (g_internet != null)
-          g_internet.Close () ;
-// Close the app's log file
-     CLog.Close () ;
+// Stop the app
+     StopRProxy () ;
+
 // Option to wait on exit
      if (gbfWait)
      {
@@ -296,7 +306,7 @@ private static bool PrepareApp (string[] astrArgs)
      if (! CommandLine (astrArgs))
           return false ;
 // Start listening for incoming http connections
-     if (! StartReverseProxy ())
+     if (! StartRProxy ())
           return false ;
 // Connect to localized server which actually handles the Internet client's requests
      if (! ConnectLocalizedServer ())
@@ -307,6 +317,8 @@ private static bool PrepareApp (string[] astrArgs)
      // Attempt to create a new log file
           if (! CLog.Open (gstrLogFolder, gstrLogName))
                return false ;
+     // Provide CSV column header record
+          WriteLogHeader () ;
      }
 
 // Good start
@@ -319,12 +331,15 @@ private static bool PrepareApp (string[] astrArgs)
 //-----------------------------------------------------------------------------
 public static bool GetConfiguration ()
 {
+     string    strHttpMethods ;
+
 // Get network settings
-     gstrDomains   = ConfigurationManager.AppSettings ["DomainNames"] ;
-     gstrLogFolder = ConfigurationManager.AppSettings ["LogFolder"] ;
-     gstrLogName   = ConfigurationManager.AppSettings ["LogName"] ;
-     gstrServerIp  = ConfigurationManager.AppSettings ["LocalizedServerIP"] ;
-     gstrProxyIp   = ConfigurationManager.AppSettings ["ReverseProxyIP"] ;
+     gstrDomains     = ConfigurationManager.AppSettings ["DomainNames"] ;
+      strHttpMethods = ConfigurationManager.AppSettings ["HttpMethods"] ;
+     gstrLogFolder   = ConfigurationManager.AppSettings ["LogFolder"] ;
+     gstrLogName     = ConfigurationManager.AppSettings ["LogName"] ;
+     gstrServerIp    = ConfigurationManager.AppSettings ["LocalizedServerIP"] ;
+     gstrProxyIp     = ConfigurationManager.AppSettings ["ReverseProxyIP"] ;
 
 // Construct reverse proxy address (this code runs at this location)
      gstrHttp  = "http://"  + gstrProxyIp + ":80/" ;
@@ -336,7 +351,10 @@ public static bool GetConfiguration ()
      gastrDomains = gstrDomains.Split (',') ;
      for (var iIndex = 0 ; iIndex < gastrDomains.Length ; iIndex ++ )
           gastrDomains [iIndex] = gastrDomains [iIndex].Trim () ;
-          
+
+// Ensure Http Methods list is book-ended correctly
+     gstrHttpMethods = string.Format ("¬{0}¬", strHttpMethods.ToUpper ()) ;
+
 // Use size of ThreadPool for a worker thread
      SetWorkerThreads () ;
      return true ;
@@ -421,9 +439,9 @@ private static void SetWorkerThreads ()
 
 
 //-----------------------------------------------------------------------------
-//                                                            StartReverseProxy
+//                                                                  StartRProxy
 //-----------------------------------------------------------------------------
-public static bool StartReverseProxy ()
+public static bool StartRProxy ()
 {
 // Create a Http server and start listening for incoming connections
      try
@@ -446,6 +464,23 @@ public static bool StartReverseProxy ()
      Console.WriteLine ("") ;
      Console.ForegroundColor = ConsoleColor.White ;
      return true ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                   StopRProxy
+//-----------------------------------------------------------------------------
+public static void StopRProxy ()
+{
+// Flush unreported console text
+     CConsole.WaitEmptyQueue () ;
+
+// Close the listener (Stop Reverse Proxy Engine)
+     if (g_internet != null)
+          g_internet.Close () ;
+
+// Close the app's log file
+     CLog.Close () ;
 }
 
 
@@ -495,11 +530,11 @@ public static async void ServiceThread (Object oContext)
      string    strLine ;
      string    strStatus ;
 
-     HttpListenerContext      f_context ;
-     HttpResponseMessage      f_message ;
-
      CRequest       c_request ;
      CResponse      c_response ;
+
+     HttpListenerContext      f_context ;
+     HttpResponseMessage      f_message ;
 
 // Init
      strLine = "" ;
@@ -508,6 +543,7 @@ public static async void ServiceThread (Object oContext)
      c_request  = new CRequest  (f_context.Request) ;
      c_response = new CResponse (f_context.Response) ;
      f_message  = null ;
+
 // Send info to console window without terminating the console line
      if (gbfConsole)
           strLine = DisplayEvent (c_request) ;
@@ -566,9 +602,6 @@ public static async void ServiceThread (Object oContext)
      // Apply default encoding if required
           if (c_response.ContentEncoding == null)
                c_response.ContentEncoding = Encoding.UTF8 ;
-
-          c_response.ContentLength = abResponse.LongLength ;
-          //c_response.KeepAlive     = false ;
      }
 // Return data over the Internet to the client
      try
@@ -576,7 +609,6 @@ public static async void ServiceThread (Object oContext)
      // Respond to request
           c_response.ContentLength = abResponse.Length ;
           c_response.OutputStream.Write (abResponse, 0, abResponse.Length) ;
-          //c_response.OutputStream.Close () ;
      }
      catch (Exception e)
      {
@@ -588,16 +620,25 @@ public static async void ServiceThread (Object oContext)
 
 close_channel:
 
+     if (gbfLog)
+          WriteLog (c_request, c_response) ;
+// Send the response to the client and close the channel
+     try
+     {
+          c_response.OutputStream.Flush () ;
+          c_response.OutputStream.Close () ;
+          f_context.Response.Close () ;
+     }
+     catch (Exception ex)
+     {
+          CConsole.WriteLine (FormatException (ex.Message)) ;
+     }
 // Queue line to console
      if (gbfConsole)
      {
           CConsole.WriteLine (strLine) ;
           CConsole.WaitEmptyQueue () ;
      }
-     if (gbfLog)
-          WriteLog (c_request, c_response) ;
-// Send the response to the client and close the channel
-     c_response.OutputStream.Close () ;
 }
 
 
@@ -634,20 +675,24 @@ public static bool CheckDomains (string strHostName)
 //                                                                  CheckMethod
 //-----------------------------------------------------------------------------
 /*
- *   HTTP request methods are:
+ *   Known HTTP request methods are:
  *
  *        CONNECT, DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, TRACE.
  *
- *   Currently, only GET is supported by RPEngine's ServiceThread().
+ *   Currently, only GET is supported by RPEngine's ServiceThread(). However,
+ *   in the near future we plan to support POST. You will be able to limit the
+ *   supported methods for your installation by changing the "HttpMethods"
+ *   list in the app's config file. For example:
+ *
+ *        <add key="HttpMethods" value="GET,POST" />
+ *
+ *   The string comparison is case-insensitive as all characters will be
+ *   converted to uppercase prior to matching.
  */
 public static bool CheckMethod (string strMethod)
 {
 // Approve only these methods
-     if (strMethod.Equals ("GET"))
-          return true ;
-
-// Reject all other methods
-     return false ;
+     return (gstrHttpMethods.Contains (strMethod.ToUpper ())) ;
 }
 
 
@@ -843,11 +888,51 @@ public static string GetBuildVersion ()
 
 
 //-----------------------------------------------------------------------------
+//                                                               WriteLogHeader
+//-----------------------------------------------------------------------------
+public static void WriteLogHeader ()
+{
+// Output request details in CSV record
+     CLog.WriteCsvField ("[REQ]") ;
+     CLog.WriteCsvField ("LogDate") ;
+     CLog.WriteCsvField ("LogTime") ;
+     CLog.WriteCsvField ("IpAddress") ;
+     CLog.WriteCsvField ("HttpMethod") ;
+     CLog.WriteCsvField ("Url") ;
+     CLog.WriteCsvField ("UserAgent") ;
+     CLog.WriteCsvField ("HeaderCount") ;
+     CLog.WriteCsvField ("Headers") ;
+     CLog.WriteCsvField ("HdrHost") ;
+     CLog.WriteCsvField ("HdrReferrer") ;
+     CLog.WriteCsvField ("HdrContent") ;
+     CLog.WriteCsvField ("HdrAccept") ;
+     CLog.WriteCsvField ("HdrSecFetch") ;
+     CLog.WriteCsvField ("HdrDeprecated") ;
+     CLog.WriteCsvField ("IsAuthenticated") ;
+     CLog.WriteCsvField ("IsLocal") ;
+     CLog.WriteCsvField ("IsSecure") ;
+     CLog.WriteCsvField ("EncBodyName") ;
+     CLog.WriteCsvField ("EncHdrName") ;
+     CLog.WriteCsvField ("EncName") ;
+     CLog.WriteCsvField ("EncWebName") ;
+
+// Output response details in CSV record
+     CLog.WriteCsvField ("[RESP]") ;
+     CLog.WriteCsvField ("StatusCode") ;
+     CLog.WriteCsvField ("ContentType") ;
+     CLog.WriteCsvField ("EncodingName") ;
+     CLog.WriteCsvField ("ContentLength") ;
+// Terminate record and flush buffers
+     CLog.WriteCsvEnd ("[END]") ;
+}
+
+
+//-----------------------------------------------------------------------------
 //                                                                     WriteLog
 //-----------------------------------------------------------------------------
 public static void WriteLog (CRequest c_request, CResponse c_response)
 {
-// Check if thread safe entry
+// Critical section
      lock (g_lockLog)
      {
      // Output request details in CSV record
@@ -859,9 +944,21 @@ public static void WriteLog (CRequest c_request, CResponse c_response)
           CLog.WriteCsvField (c_request.Url) ;
           CLog.WriteCsvField (c_request.UserAgent) ;
           CLog.WriteCsvField (c_request.HeaderCount.ToString ()) ;
+          CLog.WriteCsvField (c_request.Headers) ;
+          CLog.WriteCsvField (c_request.HdrHost) ;
+          CLog.WriteCsvField (c_request.HdrReferrer) ;
+          CLog.WriteCsvField (c_request.HdrContent) ;
+          CLog.WriteCsvField (c_request.HdrAccept) ;
+          CLog.WriteCsvField (c_request.HdrSecFetch) ;
+          CLog.WriteCsvField (c_request.HdrDeprecated) ;
           CLog.WriteCsvField (c_request.IsAuthenticated.ToString ()) ;
           CLog.WriteCsvField (c_request.IsLocal.ToString ()) ;
           CLog.WriteCsvField (c_request.IsSecure.ToString ()) ;
+          CLog.WriteCsvField (c_request.EncBodyName) ;
+          CLog.WriteCsvField (c_request.EncHdrName) ;
+          CLog.WriteCsvField (c_request.EncName) ;
+          CLog.WriteCsvField (c_request.EncWebName) ;
+
      // Output response details in CSV record
           CLog.WriteCsvField ("[RESP]") ;
           CLog.WriteCsvField (c_response.StatusCode.ToString ()) ;

@@ -146,25 +146,41 @@ public static void Close ()
 
 
 //-----------------------------------------------------------------------------
-//                                                                WriteCsvField
-//-----------------------------------------------------------------------------
-public static void WriteCsvField (string strField)
-{
-     m_swLog.Write (strField) ;
-     m_swLog.Write (",") ;
-}
-
-
-//-----------------------------------------------------------------------------
 //                                                                  WriteCsvEnd
 //-----------------------------------------------------------------------------
 public static void WriteCsvEnd (string strField)
 {
 // Write last field
-     m_swLog.WriteLine (strField) ;
+     WriteCsvField (strField) ;
+     m_swLog.WriteLine () ;
+// Release the data to the file
      m_swLog.Flush () ;
 // Increment record count
      m_lCount ++ ;
+}
+
+
+//-----------------------------------------------------------------------------
+//                                                                WriteCsvField
+//-----------------------------------------------------------------------------
+public static void WriteCsvField (string strField)
+{
+     bool      bfQuote ;
+
+// Treat null strings as blank strings
+     if (strField == null)
+          strField = "" ;
+// Check if string contains any commas
+     bfQuote = (strField.Contains (",")) ;
+// Replace double quotes with single quotes
+     strField = strField.Replace ('"', '\'') ;
+// Output sequence
+     if (bfQuote)
+          m_swLog.Write ("\"") ;
+     m_swLog.Write (strField) ;
+     if (bfQuote)
+          m_swLog.Write ("\"") ;
+     m_swLog.Write (",") ;
 }
 
 
